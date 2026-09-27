@@ -1,0 +1,70 @@
+x-app-env: &app-env
+  API_PORT: '3000'
+  DATABASE_URL: postgresql://realplay:realplay@postgres:5432/realplay
+  REDIS_URL: redis://redis:6379/0
+  OPENAPI_ENABLED: 'true'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: realplay
+      POSTGRES_PASSWORD: realplay
+      POSTGRES_DB: realplay
+    ports:
+      - '5433:5432'
+    volumes:
+      - realplay_postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U realplay -d realplay']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
+    ports:
+      - '6380:6379'
+    volumes:
+      - realplay_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Full stack: `pnpm docker:up`. Plain `docker compose up -d` starts only the
+  # infrastructure above, for local development with `pnpm dev`.
+  migrate:
+    profiles: ['app']
+    build: { context: ., target: build }
+    command: ['pnpm', 'prisma', 'migrate', 'deploy']
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    profiles: ['app']
+    build: { context: ., target: runtime }
+    command: ['node', 'dist/apps/api/main.js']
+    environment: *app-env
+    ports:
+      - '3000:3000'
+    depends_on: &app-depends-on
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  workers:
+    profiles: ['app']
+    build: { context: ., target: runtime }
+    command: ['node', 'dist/apps/workers/main.js']
+    environment: *app-env
+    depends_on: *app-depends-on
+
+volumes:
+  realplay_postgres_data:
+  realplay_redis_data:

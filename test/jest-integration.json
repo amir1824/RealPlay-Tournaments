@@ -1,0 +1,15 @@
+{
+  "rootDir": "..",
+  "testEnvironment": "node",
+  "testRegex": "test/.*\\.int-spec\\.ts$",
+  "transform": {
+    "^.+\\.ts$": ["ts-jest", { "tsconfig": "<rootDir>/tsconfig.json" }]
+  },
+  "moduleFileExtensions": ["ts", "js", "json"],
+  "setupFiles": ["reflect-metadata"],
+  "globalSetup": "<rootDir>/test/support/global-setup.ts",
+  "testTimeout": 20000,
+  "moduleNameMapper": {
+    "^@app/([^/]+)/(.*)$": "<rootDir>/libs/$1/src/$2"
+  }
+}

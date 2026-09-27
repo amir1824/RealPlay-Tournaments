@@ -1,0 +1,87 @@
+// RealPlay Tournaments — data model
+//
+// PostgreSQL is the durable source of truth for everything. Redis (see
+// libs/tournaments/src/leaderboard) holds only the live ranking; final
+// placements are computed from TournamentBet rows and never read it.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tournament {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String    @db.VarChar(200)
+  startsAt     DateTime  @map("starts_at") @db.Timestamptz(3)
+  endsAt       DateTime  @map("ends_at") @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  finalizedAt  DateTime? @map("finalized_at") @db.Timestamptz(3)
+
+  tournamentBets    TournamentBet[]
+  finalPlacements  FinalPlacement[]
+
+  // idx_tournaments_open_ends_at (ends_at) WHERE finalized_at IS NULL lives in
+  // the init migration only: Prisma 5 can't declare a partial index, and
+  // ignores one it finds, so there is no drift.
+  @@map("tournaments")
+}
+
+model Bet {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  externalBetId  String   @unique @map("external_bet_id") @db.VarChar(128)
+  playerId       String   @map("player_id") @db.VarChar(128)
+  amount         Int
+  currency       String   @db.Char(3)
+  createdAt      DateTime @map("created_at") @db.Timestamptz(3)
+
+  tournamentBets TournamentBet[]
+
+  @@map("bets")
+}
+
+/// One row per (tournament, bet) that was accepted into that tournament's
+/// score. This is the durable idempotency record — the unique constraint on
+/// (tournamentId, externalBetId) is what makes "count each bet once per
+/// tournament" safe under concurrent duplicate requests, and it is also the
+/// authoritative source the finalization worker aggregates from.
+model TournamentBet {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tournamentId   String    @map("tournament_id") @db.Uuid
+  betId          String    @map("bet_id") @db.Uuid
+  externalBetId  String    @map("external_bet_id") @db.VarChar(128)
+  playerId       String    @map("player_id") @db.VarChar(128)
+  amount         Int
+  createdAt      DateTime  @map("created_at") @db.Timestamptz(3)
+  /// When the row was written, on the database clock: the live board replay's
+  /// cursor walks the ledger by it (see live-board-replay.service.ts).
+  insertedAt     DateTime  @default(dbgenerated("transaction_timestamp()")) @map("inserted_at") @db.Timestamptz(3)
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  bet        Bet        @relation(fields: [betId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, externalBetId], name: "uq_tournament_external_bet")
+  @@index([tournamentId, playerId], name: "idx_contrib_tournament_player")
+  @@index([betId], name: "idx_tournament_bets_bet_id")
+  @@index([insertedAt, id], name: "idx_tournament_bets_inserted_at")
+  @@map("tournament_bets")
+}
+
+/// Authoritative final standings, written once by the finalization worker
+/// from an aggregate over TournamentBet — never from Redis.
+model FinalPlacement {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tournamentId String   @map("tournament_id") @db.Uuid
+  playerId     String   @map("player_id") @db.VarChar(128)
+  score        BigInt
+  placement    Int
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, playerId], name: "uq_final_tournament_player")
+  @@unique([tournamentId, placement], name: "uq_final_tournament_placement")
+  @@map("final_placements")
+}
